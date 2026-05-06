@@ -47,6 +47,10 @@ def main() -> None:
         summary["discovered"] += len(metadata["discovered"]) + len(metadata.get("assignments", [])) + len(metadata.get("assignment_attachments", []))
         for item in metadata["downloads"]:
             summary[item["status"]] += 1
+            if item["status"] == "skipped" and item.get("reason") not in {"already_exists", "already_exists_unknown_size"}:
+                print(f"  Skipped {item['file']}: {item.get('reason')}")
+            if item["status"] == "failed":
+                print(f"  Failed {item['file']}: {item.get('reason')}")
     print("Done")
     print(f"Courses: {len(courses)}")
     print(f"Course failures: {summary.get('failed_courses', 0)}")

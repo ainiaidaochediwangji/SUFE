@@ -20,13 +20,14 @@ from config import (
     JSON_HEADERS,
     SSO_SERVICE_LOGIN_URL,
 )
-from fs_utils import course_directory, ensure_directory, sanitize_name
+from fs_utils import course_directory, ensure_directory, sanitize_name, write_json
 
 COURSE_CODE_PATTERN = re.compile(r"^[A-Za-z]{2,}[A-Za-z0-9_-]*\d+[A-Za-z0-9_-]*$")
 ENV_JSON_PATTERN = re.compile(r"ENV = (\{.*?\});", re.DOTALL)
 ASSIGNMENT_API_ENDPOINT_PATTERN = re.compile(r'data-api-endpoint="([^"]*?/api/v1/(?:courses/\d+/)?files/\d+)"')
 ASSIGNMENT_COURSE_FILE_PATTERN = re.compile(r"/courses/(\d+)/files/(\d+)")
 ASSIGNMENT_GLOBAL_FILE_PATTERN = re.compile(r"/files/(\d+)/download")
+VIEWER_PREVIEW_SRC_PATTERN = re.compile(r'src="/(preview/\d+\.[A-Za-z0-9]+)"')
 
 
 def _html_get(session: requests.Session, url: str, **kwargs: Any) -> requests.Response:
@@ -190,6 +191,7 @@ def _normalize_file_record(raw: dict[str, Any], source: str, module_name: str | 
         "updated_at": raw.get("updated_at") or raw.get("modified_at"),
         "locked_for_user": raw.get("locked_for_user"),
         "lock_explanation": raw.get("lock_explanation"),
+        "preview_url": raw.get("preview_url") or raw.get("enhanced_preview_url"),
         "source": source,
         "module_name": module_name,
         "raw": raw,
@@ -220,11 +222,43 @@ def _normalize_assignment_record(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _course_files(session: requests.Session, course_id: int) -> list[dict[str, Any]]:
-    return [
-        _normalize_file_record(item, source="files")
+    raw_items = [
+        item
         for item in _paginate(session, f"{CANVAS_API_ROOT}/courses/{course_id}/files", params={"per_page": 100})
         if isinstance(item, dict)
     ]
+
+    folder_ids = sorted(
+        {
+            int(item["folder_id"])
+            for item in raw_items
+            if item.get("folder_id") is not None and str(item.get("folder_id")).isdigit()
+        }
+    )
+    folder_details: dict[int, dict[str, Any]] = {}
+    for folder_id in folder_ids:
+        for item in _paginate(
+            session,
+            f"{CANVAS_API_ROOT}/folders/{folder_id}/files",
+            params={
+                "include[]": ["user", "usage_rights", "enhanced_preview_url", "context_asset_string"],
+                "per_page": 100,
+            },
+        ):
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            folder_details[int(item["id"])] = item
+
+    normalized: list[dict[str, Any]] = []
+    for item in raw_items:
+        merged = dict(item)
+        item_id = item.get("id")
+        if item_id is not None:
+            detail = folder_details.get(int(item_id))
+            if detail:
+                merged.update(detail)
+        normalized.append(_normalize_file_record(merged, source="files"))
+    return normalized
 
 
 def _course_assignments(session: requests.Session, course_id: int) -> list[dict[str, Any]]:
@@ -453,6 +487,85 @@ def _download_assignment_content(
     return downloads
 
 
+def _preview_download_url(session: requests.Session, record: dict[str, Any]) -> str | None:
+    file_id = record.get("id")
+    if not file_id:
+        return None
+
+    preview_url = str(record.get("preview_url") or "").strip()
+    filename = str(record.get("filename") or record.get("display_name") or "")
+    suffix = Path(filename).suffix.lower()
+    content_type = str(record.get("content_type") or "").lower()
+    if not suffix and content_type == "application/pdf":
+        suffix = ".pdf"
+    if not suffix:
+        return None
+
+    if preview_url:
+        viewer_url = preview_url
+        if viewer_url.startswith("/"):
+            viewer_url = f"{CANVAS_BASE_URL.rstrip('/')}{viewer_url}"
+        try:
+            viewer_response = session.get(viewer_url, headers=HTML_HEADERS, timeout=60, allow_redirects=True)
+            viewer_response.raise_for_status()
+            match = VIEWER_PREVIEW_SRC_PATTERN.search(viewer_response.text)
+            if match:
+                return f"{CANVAS_BASE_URL.rstrip('/')}/{match.group(1)}"
+        except requests.RequestException:
+            pass
+
+        preview_path = urlparse(preview_url).path
+        match = re.search(r"/files/(\d+)/file_preview$", preview_path)
+        if match:
+            file_id = match.group(1)
+
+    return f"{CANVAS_BASE_URL.rstrip('/')}/preview/{file_id}{suffix}"
+
+
+def _warm_preview(session: requests.Session, record: dict[str, Any], attempts: int = 4, wait_seconds: float = 2.0) -> None:
+    file_id = record.get("id")
+    if not file_id:
+        return
+
+    preview_page_url = str(record.get("preview_url") or "").strip()
+    if preview_page_url:
+        if preview_page_url.startswith("/"):
+            preview_page_url = f"{CANVAS_BASE_URL.rstrip('/')}{preview_page_url}"
+        try:
+            session.get(preview_page_url, headers=HTML_HEADERS, timeout=60, allow_redirects=True)
+        except requests.RequestException:
+            pass
+
+    state_url = f"{CANVAS_BASE_URL.rstrip('/')}/viewer/{file_id}/state"
+    for _ in range(attempts):
+        try:
+            response = session.get(state_url, headers=JSON_HEADERS, timeout=60)
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError):
+            time.sleep(wait_seconds)
+            continue
+
+        if str(payload.get("state")) == "1":
+            return
+        time.sleep(wait_seconds)
+
+
+def _preview_state(session: requests.Session, file_id: Any) -> str | None:
+    try:
+        response = session.get(
+            f"{CANVAS_BASE_URL.rstrip('/')}/viewer/{file_id}/state",
+            headers=JSON_HEADERS,
+            timeout=60,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError):
+        return None
+    state = payload.get("state")
+    return None if state is None else str(state)
+
+
 def download_file(session: requests.Session, file_record: dict[str, Any], target_dir: Path) -> dict[str, Any]:
     ensure_directory(target_dir)
     filename = _local_filename_for_record(file_record)
@@ -467,8 +580,16 @@ def download_file(session: requests.Session, file_record: dict[str, Any], target
         if expected_size is None:
             return {"status": "skipped", "path": str(target_path), "reason": "already_exists_unknown_size"}
 
-    download_url = file_record.get("url")
-    if not download_url:
+    download_candidates: list[tuple[str, str]] = []
+    download_url = str(file_record.get("url") or "").strip()
+    if download_url:
+        download_candidates.append(("direct", download_url))
+
+    preview_download_url = _preview_download_url(session, file_record)
+    if preview_download_url:
+        download_candidates.append(("preview", preview_download_url))
+
+    if not download_candidates:
         lock_explanation = file_record.get("lock_explanation") or ""
         if file_record.get("locked_for_user") or lock_explanation:
             return {
@@ -479,29 +600,45 @@ def download_file(session: requests.Session, file_record: dict[str, Any], target
         return {"status": "failed", "path": str(target_path), "reason": "missing_download_url"}
 
     last_error: Exception | None = None
-    for attempt in range(3):
-        response: requests.Response | None = None
-        try:
-            response = session.get(
-                download_url,
-                headers=FILE_HEADERS,
-                stream=True,
-                timeout=(30, 300),
-            )
-            response.raise_for_status()
-            with target_path.open("wb") as handle:
-                for chunk in response.iter_content(chunk_size=1024 * 128):
-                    if chunk:
-                        handle.write(chunk)
-            break
-        except requests.RequestException as exc:
-            last_error = exc
-            if attempt == 2:
-                raise
-            time.sleep(2.0 * (attempt + 1))
-        finally:
-            if response is not None:
-                response.close()
+    for candidate_name, candidate_url in download_candidates:
+        candidate_attempts = 6 if candidate_name == "preview" else 3
+        for attempt in range(candidate_attempts):
+            response: requests.Response | None = None
+            try:
+                if candidate_name == "preview":
+                    _warm_preview(session, file_record)
+                response = session.get(
+                    candidate_url,
+                    headers=FILE_HEADERS,
+                    stream=True,
+                    timeout=(30, 300),
+                )
+                response.raise_for_status()
+                with target_path.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=1024 * 128):
+                        if chunk:
+                            handle.write(chunk)
+                break
+            except requests.RequestException as exc:
+                last_error = exc
+                if target_path.exists():
+                    target_path.unlink()
+                preview_state = None
+                if candidate_name == "preview":
+                    preview_state = _preview_state(session, file_record.get("id"))
+                if attempt == candidate_attempts - 1:
+                    if candidate_name == download_candidates[-1][0]:
+                        raise
+                if candidate_name == "preview" and preview_state == "0":
+                    time.sleep(5.0 * (attempt + 1))
+                else:
+                    time.sleep(2.0 * (attempt + 1))
+            finally:
+                if response is not None:
+                    response.close()
+        else:
+            continue
+        break
     else:
         if last_error is not None:
             raise last_error
@@ -566,4 +703,5 @@ def download_course_materials(session: requests.Session, course: dict[str, Any])
         "assignment_attachments": assignment_attachments,
         "downloads": downloads,
     }
+    write_json(base_dir / "_download_report.json", metadata)
     return metadata
