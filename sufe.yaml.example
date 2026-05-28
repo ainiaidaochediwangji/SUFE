@@ -1,0 +1,35 @@
+# SUFE 配置文件示例
+# 将此文件复制为 sufe.yaml 并修改配置
+
+# Canvas 模块配置
+canvas:
+  # 输出目录（相对于项目根目录）
+  output_dir: course
+  # 并发下载课程数
+  concurrency: 2
+  # 文件下载并发数
+  file_concurrency: 4
+  # 模块发现并发数
+  module_concurrency: 8
+
+# Career 模块配置
+career:
+  # 输出目录（相对于项目根目录）
+  output_dir: career_data
+  # 详情抓取并发数
+  concurrency: 8
+  # 分页抓取并发数
+  page_concurrency: 3
+  # 最大抓取条目数
+  max_items: 300
+
+# Grade 模块配置
+grade:
+  # 输出目录（相对于项目根目录）
+  output_dir: grade_data
+  # 导出格式：json, csv, excel
+  export_formats:
+    - json
+    - csv
+  # 是否生成分析报告
+  generate_report: true

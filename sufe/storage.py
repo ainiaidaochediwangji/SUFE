@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import csv
 import json
+import os
 import re
 from pathlib import Path
+from typing import Any
 
 INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 WHITESPACE = re.compile(r"\s+")
@@ -37,19 +40,32 @@ def course_directory(download_root: Path, course: dict) -> Path:
     return ensure_directory(download_root / subject / course_name)
 
 
-def unique_target_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-    stem = path.stem
-    suffix = path.suffix
-    counter = 1
-    while True:
-        candidate = path.with_name(f"{stem} ({counter}){suffix}")
-        if not candidate.exists():
-            return candidate
-        counter += 1
-
-
-def write_json(path: Path, payload: dict) -> None:
+def write_json(path: Path, payload: Any) -> None:
     ensure_directory(path.parent)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path = path.with_suffix(path.suffix + ".tmp.json")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp_path, path)
+
+
+def read_json(path: Path, fallback: Any = None) -> Any:
+    if not path.exists():
+        return fallback
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str], headers: list[str]) -> None:
+    ensure_directory(path.parent)
+    temp_path = path.with_suffix(path.suffix + ".tmp.csv")
+    with temp_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(headers)
+        for row in rows:
+            writer.writerow([row.get(field) for field in fields])
+    os.replace(temp_path, path)
+
+
+def write_text(path: Path, text: str) -> None:
+    ensure_directory(path.parent)
+    temp_path = path.with_suffix(path.suffix + ".tmp.txt")
+    temp_path.write_text(text, encoding="utf-8")
+    os.replace(temp_path, path)

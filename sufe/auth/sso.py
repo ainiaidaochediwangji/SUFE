@@ -3,20 +3,20 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
-import requests
+import httpx
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 
-from config import (
+from sufe.config import (
     SSO_DO_LOGIN_URL,
     SSO_LOGIN_PAGE_URL,
     SSO_QUERY_ALL_VALID_URL,
     SSO_QUERY_USER_VALID_URL,
+    SSO_SERVICE_LOGIN_URL,
     SSO_SLIDER_CHECK_URL,
     SSO_SLIDER_INIT_URL,
-    create_browser_session,
-    load_env,
 )
 
 
@@ -24,33 +24,11 @@ from config import (
 class SliderInit:
     token: str
     y: int
-    source_image_b64: str
-    puzzle_image_b64: str
 
 
-def load_credentials() -> tuple[str, str]:
-    env = load_env()
-    username = env.get("user", "").strip()
-    password = env.get("pwd", "")
-    if not username or not password:
-        raise RuntimeError("Missing user or pwd in .env")
-    return username, password
-
-
-def create_session() -> requests.Session:
-    session = create_browser_session()
-    session.headers.update(
-        {
-            "Referer": SSO_LOGIN_PAGE_URL,
-            "Origin": "https://login.sufe.edu.cn",
-        }
-    )
-    return session
-
-
-def get_login_policy(session: requests.Session) -> dict[str, Any]:
-    session.get(SSO_LOGIN_PAGE_URL, timeout=30)
-    response = session.get(SSO_QUERY_ALL_VALID_URL, timeout=30)
+async def load_policy(client: httpx.AsyncClient) -> dict[str, Any]:
+    await client.get(SSO_LOGIN_PAGE_URL)
+    response = await client.get(SSO_QUERY_ALL_VALID_URL)
     response.raise_for_status()
     payload = response.json()
     data = payload.get("data")
@@ -62,11 +40,10 @@ def get_login_policy(session: requests.Session) -> dict[str, Any]:
     return payload
 
 
-def get_user_auth_mode(session: requests.Session, username: str) -> dict[str, Any]:
-    response = session.get(
+async def load_auth_mode(client: httpx.AsyncClient, username: str) -> dict[str, Any]:
+    response = await client.get(
         SSO_QUERY_USER_VALID_URL,
         params={"username": username, "authType": "webLocalAuth"},
-        timeout=30,
     )
     response.raise_for_status()
     payload = response.json()
@@ -75,8 +52,8 @@ def get_user_auth_mode(session: requests.Session, username: str) -> dict[str, An
     return payload
 
 
-def _init_slider(session: requests.Session) -> SliderInit:
-    response = session.post(SSO_SLIDER_INIT_URL, json={}, timeout=30)
+async def _init_slider(client: httpx.AsyncClient) -> SliderInit:
+    response = await client.post(SSO_SLIDER_INIT_URL, json={})
     response.raise_for_status()
     payload = response.json()
     if payload.get("code") != "0":
@@ -84,29 +61,21 @@ def _init_slider(session: requests.Session) -> SliderInit:
     data = payload.get("data")
     if not isinstance(data, dict):
         raise RuntimeError(f"slider init returned unexpected payload: {payload}")
-    return SliderInit(
-        token=str(data["token"]),
-        y=int(data["Y"]),
-        source_image_b64=str(data.get("sourceImage") or ""),
-        puzzle_image_b64=str(data.get("newImage") or ""),
-    )
+    return SliderInit(token=str(data["token"]), y=int(data["Y"]))
 
 
-def solve_slider(session: requests.Session, max_x: int = 500, captcha_attempts: int = 2) -> str:
-    # The live site accepts a straightforward integer scan on X, and this
-    # sequence is already validated for the current deployment.
-    for _ in range(captcha_attempts):
-        slider = _init_slider(session)
+async def solve_slider(client: httpx.AsyncClient, max_x: int = 500, attempts: int = 2) -> str:
+    for _ in range(attempts):
+        slider = await _init_slider(client)
         for x in range(max_x):
             try:
-                response = session.get(
+                response = await client.get(
                     SSO_SLIDER_CHECK_URL,
                     params={"token": slider.token, "X": x, "Y": slider.y},
-                    timeout=30,
                 )
                 response.raise_for_status()
                 payload = response.json()
-            except requests.RequestException:
+            except httpx.HTTPError:
                 continue
             if payload.get("code") != "0":
                 continue
@@ -120,37 +89,37 @@ def solve_slider(session: requests.Session, max_x: int = 500, captcha_attempts: 
                     return str(vcode)
             raise RuntimeError(f"slider check succeeded but returned no vcode: {payload}")
 
-    raise RuntimeError(f"slider check never succeeded after {captcha_attempts} attempts within X range 0..{max_x - 1}")
+    raise RuntimeError(f"slider check never succeeded after {attempts} attempts within X range 0..{max_x - 1}")
 
 
-def encrypt_password(password: str, public_key_b64: str) -> str:
-    public_key = RSA.import_key(base64.b64decode(public_key_b64))
-    cipher = PKCS1_v1_5.new(public_key)
-    encrypted = cipher.encrypt(password.encode("utf-8"))
-    return base64.b64encode(encrypted).decode("ascii")
-
-
-def login_sso(session: requests.Session, username: str, password: str) -> dict[str, Any]:
-    policy = get_login_policy(session)
-    get_user_auth_mode(session, username)
-    vcode = solve_slider(session)
+async def login_sso(client: httpx.AsyncClient, username: str, password: str) -> dict[str, Any]:
+    policy = await load_policy(client)
+    await load_auth_mode(client, username)
+    vcode = await solve_slider(client)
 
     param = policy["data"]["param"]
-    encrypted_password = encrypt_password(password, param["publicKey"])
+    public_key = RSA.import_key(base64.b64decode(param["publicKey"]))
+    cipher = PKCS1_v1_5.new(public_key)
+    encrypted = base64.b64encode(cipher.encrypt(password.encode("utf-8"))).decode("ascii")
 
     payload = {
         "authType": "webLocalAuth",
         "dataField": {
             "username": username,
-            "password": encrypted_password,
+            "password": encrypted,
             "vcode": vcode,
             "publicKeyId": param["publicKeyId"],
         },
         "redirectUri": "",
     }
-    response = session.post(SSO_DO_LOGIN_URL, json=payload, timeout=30)
+    response = await client.post(SSO_DO_LOGIN_URL, json=payload)
     response.raise_for_status()
     result = response.json()
     if result.get("code") != "0":
         raise RuntimeError(f"doLogin failed: {result}")
     return result
+
+
+async def login_service(client: httpx.AsyncClient, service_url: str) -> httpx.Response:
+    ticket_url = f"{SSO_SERVICE_LOGIN_URL}?service={quote(service_url, safe='')}"
+    return await client.get(ticket_url)

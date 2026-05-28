@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sufe"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx[http2]>=0.27.0",
+    "aiofiles>=24.1.0",
+    "python-dotenv>=1.0.0",
+    "pycryptodome>=3.20.0",
+    "tqdm>=4.66.0",
+    "openpyxl>=3.1.5",
+]
+
+[project.scripts]
+sufe = "sufe.cli:main"
