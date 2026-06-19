@@ -33,3 +33,9 @@ grade:
     - csv
   # 是否生成分析报告
   generate_report: true
+
+evaluation:
+  # 评分等级：excellent / good / fair / bad / poor
+  level: good
+  # 并发评教数
+  concurrency: 4
