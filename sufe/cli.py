@@ -25,6 +25,8 @@ def main() -> None:
     p_grade = sub.add_parser("grade", help="同步成绩信息")
     p_grade.add_argument("--output", "-o", type=Path, dest="output_dir", help="输出目录")
 
+    sub.add_parser("evaluate", help="自动评教")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -38,12 +40,17 @@ def main() -> None:
         "canvas": ("sufe.canvas.run", "get_canvas_config"),
         "career": ("sufe.career.run", "get_career_config"),
         "grade": ("sufe.grade.run", "get_grade_config"),
+        "evaluate": ("sufe.evaluation", None),
     }
 
     run_module, config_name = dispatch[args.command]
 
-    # Dynamic import and execution
     import importlib
+
+    if config_name is None:
+        importlib.import_module(run_module).run()
+        return
+
     run_func = importlib.import_module(run_module).run
     config_func = getattr(importlib.import_module("sufe.user_config"), config_name)
 
