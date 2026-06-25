@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import sys
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from pathlib import Path
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="sufe",
-        description="SUFE 综合工具：课程下载、就业信息、成绩查询",
+        description="SUFE 综合工具：课程下载、就业信息、成绩查询、自动评教",
     )
     sub = parser.add_subparsers(dest="command", help="子命令")
 
@@ -32,10 +33,10 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
-    # Extract CLI args, filter None
+    # 提取 CLI 参数，过滤 None
     cli = {k: v for k, v in vars(args).items() if k != "command" and v is not None}
 
-    # Dispatch table
+    # 子命令分发表
     dispatch = {
         "canvas": ("sufe.canvas.run", "get_canvas_config"),
         "career": ("sufe.career.run", "get_career_config"),
@@ -44,8 +45,6 @@ def main() -> None:
     }
 
     run_module, config_name = dispatch[args.command]
-
-    import importlib
 
     if config_name is None:
         importlib.import_module(run_module).run()

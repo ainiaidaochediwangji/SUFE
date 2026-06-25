@@ -127,6 +127,8 @@ SUFE/
 
 ### 1. 安装依赖
 
+需要 Python 3.10+。第三方依赖统一在 `pyproject.toml` 的 `[project.dependencies]` 声明（`requirements.txt` 与之保持同步）：
+
 ```bash
 pip install -e .
 # 或

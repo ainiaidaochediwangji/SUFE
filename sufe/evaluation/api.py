@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import html
 import json
-from html import unescape
-from re import findall, search
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -55,14 +55,14 @@ async def fetch_questionnaire_html(client: httpx.AsyncClient, course: dict[str, 
     return resp.text
 
 
-def parse_questionnaire(html: str) -> dict[str, Any]:
-    m = search(r'id="questionnaireId1"\s+value="([^"]+)"', html)
+def parse_questionnaire(text: str) -> dict[str, Any]:
+    m = re.search(r'id="questionnaireId1"\s+value="([^"]+)"', text)
     questionnaire_id = m.group(1) if m else ""
-    m = search(r'id="actId1"\s+value="([^"]+)"', html)
+    m = re.search(r'id="actId1"\s+value="([^"]+)"', text)
     act_id = m.group(1) if m else ""
-    m = search(r'id="vdata1"\s+value="([^"]+)"', html)
-    vdata = unescape(m.group(1)) if m else ""
-    question_ids = findall(r'<input\s+type="hidden"\s+name="questionId1"\s+value="([^"]+)"', html)
+    m = re.search(r'id="vdata1"\s+value="([^"]+)"', text)
+    vdata = html.unescape(m.group(1)) if m else ""
+    question_ids = re.findall(r'<input\s+type="hidden"\s+name="questionId1"\s+value="([^"]+)"', text)
     return {"questionnaire_id": questionnaire_id, "act_id": act_id, "vdata": vdata, "question_ids": question_ids}
 
 
@@ -85,21 +85,17 @@ async def query_sort_status(client: httpx.AsyncClient, act_id: str) -> bool:
 async def save_sort_values(
     client: httpx.AsyncClient,
     courses: list[dict[str, Any]],
-    act_id: str,
-) -> bool:
-    sorted_courses = sorted(courses, key=lambda c: float(c.get("SCORE", 0) or 0), reverse=True)
-    sort_values = [str(i + 1) for i in range(len(sorted_courses))]
-    sort_ids = [c["SORTID"] for c in sorted_courses]
-
+) -> dict[str, Any]:
+    # 与页面 saveSortValue() 一致:每门课赋唯一 SORTVALUE(1..N),vdata 每项须带 SORTVALUE
+    ranked = [dict(c, SORTVALUE=str(i)) for i, c in enumerate(courses, 1)]
     tedata = {
-        "vdata": sorted_courses,
-        "sortId0": sort_ids[0],
-        "sortvalues": ",".join(sort_values),
+        "vdata": ranked,
+        "sortId0": ranked[0]["SORTID"],
+        "sortvalues": ",".join(c["SORTVALUE"] for c in ranked),
     }
     resp = await client.post(EVA_SAVE_SORT_BIZ, json=tedata)
     resp.raise_for_status()
-    result = resp.json()
-    return result.get("rtn") in ("0", "2")
+    return resp.json()
 
 
 __all__ = [

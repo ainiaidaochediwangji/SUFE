@@ -8,7 +8,7 @@ from sufe.auth import create_session, load_credentials, login_service, login_sso
 from sufe.config import EAMS_SERVICE_URL, GRADE_DIR
 from sufe.grade.analyze import analyze_grades, export_csv, print_analysis
 from sufe.grade.api import fetch_grades
-from sufe.storage import write_json
+from sufe.storage import ensure_directory, write_json
 
 
 async def _run(
@@ -24,7 +24,7 @@ async def _run(
 
         data = await fetch_grades(client)
 
-        output_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(output_dir)
         if "json" in export_formats:
             write_json(output_dir / "grades.json", data)
         if "csv" in export_formats:
@@ -35,7 +35,7 @@ async def _run(
             print_analysis(analysis)
 
             summary = data.get("summary", {}).get("overall", {})
-            print(f"\n=== Official Summary ===")
+            print("\n=== Official Summary ===")
             print(f"Total courses: {summary.get('total_courses', 0)}")
             print(f"Total credits: {summary.get('total_credits', 0)}")
             print(f"Average grade: {summary.get('avg_grade', 0):.2f}")

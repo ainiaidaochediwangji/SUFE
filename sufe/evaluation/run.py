@@ -68,31 +68,44 @@ async def run() -> list[dict[str, str]]:
             print("  No evaluation activities found.")
             return []
 
-        act = activities[0]
-        act_id: str = act["ID"]
-        is_sort: str = act.get("IS_SORT", "0")
-        print(f"  Activity: {act.get('ACT_NAME', '')} ({act_id})")
-        print(f"  Requires sorting: {is_sort == '1'}")
-
-        courses = await query_detail_courses(client, act_id)
-        print(f"  Courses to process: {len(courses)}")
-
-        if is_sort == "1":
-            sort_status = await query_sort_status(client, act_id)
-            if sort_status:
-                print("  [sort] Already completed, skip")
-            else:
-                print("  [sort] Submitting course ranking...")
-                ok = await save_sort_values(client, courses, act_id)
-                print(f"  [sort] {'done' if ok else 'failed'}")
+        print(f"  Found {len(activities)} activity(ies).")
 
         semaphore = asyncio.Semaphore(concurrency)
 
-        async def guarded(course):
+        async def guarded(course, act_id):
             async with semaphore:
                 return await _eval_one(client, course, act_id, level)
 
-        results = await tqdm.gather(*(guarded(c) for c in courses), desc="evaluating", unit="course", ascii=False)
+        print("[4/4] Evaluating...")
+        results: list[dict[str, str]] = []
+        for idx, act in enumerate(activities, 1):
+            act_id = act["ID"]
+            is_sort = act.get("IS_SORT", "0")
+            print(f"  [{idx}/{len(activities)}] {act.get('ACT_NAME', '')} ({act_id})")
+            print(f"      Requires sorting: {is_sort == '1'}")
+
+            courses = await query_detail_courses(client, act_id)
+            print(f"      Courses to process: {len(courses)}")
+
+            if is_sort == "1":
+                sort_status = await query_sort_status(client, act_id)
+                if sort_status:
+                    print("      [sort] Already completed, skip")
+                else:
+                    print("      [sort] Submitting course ranking...")
+                    result = await save_sort_values(client, courses)
+                    if result.get("rtn") in ("0", "2"):
+                        print("      [sort] done")
+                    else:
+                        print(f"      [sort] failed: {result}")
+
+            act_results = await tqdm.gather(
+                *(guarded(c, act_id) for c in courses),
+                desc=f"  [{idx}/{len(activities)}] evaluating",
+                unit="course",
+                ascii=False,
+            )
+            results.extend(act_results)
 
     done = sum(1 for r in results if r["status"] == "ok")
     skipped = sum(1 for r in results if r["status"] == "skipped")

@@ -57,7 +57,7 @@ def get_canvas_config(cli_args: dict[str, Any]) -> dict[str, Any]:
     return {
         "output_dir": _first(
             cli_args.get("output_dir"),
-            _resolve_path(cfg.get("output_dir"), DOWNLOAD_DIR) if cfg.get("output_dir") else None,
+            _resolve_path(cfg.get("output_dir"), DOWNLOAD_DIR),
             DOWNLOAD_DIR,
         ),
         "concurrency": _first(cli_args.get("concurrency"), cfg.get("concurrency"), CANVAS_COURSE_CONCURRENCY),
@@ -71,7 +71,7 @@ def get_career_config(cli_args: dict[str, Any]) -> dict[str, Any]:
     return {
         "output_dir": _first(
             cli_args.get("output_dir"),
-            _resolve_path(cfg.get("output_dir"), CAREER_DIR) if cfg.get("output_dir") else None,
+            _resolve_path(cfg.get("output_dir"), CAREER_DIR),
             CAREER_DIR,
         ),
         "concurrency": _first(cli_args.get("concurrency"), cfg.get("concurrency"), CAREER_CONCURRENCY),
@@ -85,7 +85,7 @@ def get_grade_config(cli_args: dict[str, Any]) -> dict[str, Any]:
     return {
         "output_dir": _first(
             cli_args.get("output_dir"),
-            _resolve_path(cfg.get("output_dir"), GRADE_DIR) if cfg.get("output_dir") else None,
+            _resolve_path(cfg.get("output_dir"), GRADE_DIR),
             GRADE_DIR,
         ),
         "export_formats": _first(cli_args.get("export_formats"), cfg.get("export_formats"), ["json", "csv"]),
